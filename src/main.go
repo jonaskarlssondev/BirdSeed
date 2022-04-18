@@ -19,13 +19,14 @@ import (
 const (
 	layoutISO = "2006-01-02"
 	layoutUS  = "01/02/2006"
+	DSN       = "DSN" // "DSN_dev"
 )
 
 // Candle is a single candle of a time series
 type Candle struct {
 	ID     string    `gorm:"primaryKey"`
 	Ticker string    `gorm:"not null; index"`
-	Date   time.Time `gorm:"not null"`
+	Date   time.Time `gorm:"not null; index"`
 	Open   float64   `gorm:"not null"`
 	Close  float64   `gorm:"not null"`
 	High   float64   `gorm:"not null"`
@@ -39,6 +40,10 @@ func main() {
 	if err != nil {
 		log.Fatal("Could not load .env file at '../.env'")
 		os.Exit(1)
+	}
+
+	if DSN != "DSN" {
+		log.Print("Connection to database performed not using default DSN. Using '" + DSN + "'.")
 	}
 
 	db, err := connectToDatabase()
@@ -74,7 +79,7 @@ func loadEnvironmentVariables() error {
 }
 
 func connectToDatabase() (*gorm.DB, error) {
-	dsn := os.Getenv("DSN")
+	dsn := os.Getenv(DSN)
 	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, err
@@ -108,6 +113,8 @@ func aggregateCandlesFromFiles(db *gorm.DB) ([]Candle, error) {
 			continue
 		}
 
+		log.Print("Inserting data for '" + ticker + "'.")
+
 		c, err := createCandles(f.Name())
 		if err != nil {
 			return nil, err
@@ -125,8 +132,6 @@ func seed(db *gorm.DB, c []Candle) error {
 		return nil
 	}
 
-	log.Print("Inserting data for '" + c[0].Ticker + "'.")
-
 	err := db.Transaction(func(tx *gorm.DB) error {
 		tx.CreateInBatches(c, 100)
 
@@ -134,7 +139,7 @@ func seed(db *gorm.DB, c []Candle) error {
 	})
 
 	if err == nil {
-		log.Print("Successfully inserted data for '" + c[0].Ticker + "'.")
+		log.Print("Successfully inserted data.")
 	}
 
 	return err
