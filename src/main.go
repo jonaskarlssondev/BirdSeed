@@ -125,11 +125,17 @@ func seed(db *gorm.DB, c []Candle) error {
 		return nil
 	}
 
+	log.Print("Inserting data for '" + c[0].Ticker + "'.")
+
 	err := db.Transaction(func(tx *gorm.DB) error {
 		tx.CreateInBatches(c, 100)
 
 		return nil
 	})
+
+	if err == nil {
+		log.Print("Successfully inserted data for '" + c[0].Ticker + "'.")
+	}
 
 	return err
 }
@@ -178,7 +184,7 @@ func createCandle(ticker string, s []string) (Candle, error) {
 
 	volume, err := strconv.ParseInt(s[2], 10, 64)
 	if err != nil {
-		log.Fatal(err)
+		volume = 0
 	}
 
 	open, err := parse(clean(s[3]))
