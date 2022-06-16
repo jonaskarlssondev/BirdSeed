@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/csv"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
@@ -19,7 +20,7 @@ import (
 const (
 	layoutISO = "2006-01-02"
 	layoutUS  = "01/02/2006"
-	DSN       = "DSN" // "DSN_dev"
+	DSN       = "DSN"
 )
 
 // Candle is a single candle of a time series
@@ -35,26 +36,27 @@ type Candle struct {
 }
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "%s\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	// Load environment variables to get database DSN
 	err := loadEnvironmentVariables()
 	if err != nil {
-		log.Fatal("Could not load .env file at '../.env'")
-		os.Exit(1)
-	}
-
-	if DSN != "DSN" {
-		log.Print("Connection to database performed not using default DSN. Using '" + DSN + "'.")
+		fmt.Errorf("Could not load .env file at '../.env'", err)
 	}
 
 	db, err := connectToDatabase()
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	err = db.AutoMigrate(&Candle{})
 	if err != nil {
-		log.Fatal("Could not migrate database.")
-		panic(err)
+		return fmt.Errorf("Could not migrate database.", err)
 	}
 
 	// Loads .csv files from ../data/ using ticker.csv naming convention
@@ -62,16 +64,16 @@ func main() {
 	// and that the first row is the header row
 	candles, err := aggregateCandlesFromFiles(db)
 	if err != nil {
-		log.Fatal("Could not load data from csv files.")
-		panic(err)
+		return fmt.Errorf("Could not load data from csv files.", err)
 	}
 
 	// Seed the data into the database
 	err = seed(db, candles)
 	if err != nil {
-		log.Fatal(err)
-		os.Exit(1)
+		return fmt.Errorf("Could not seed data.", err)
 	}
+
+	return nil
 }
 
 func loadEnvironmentVariables() error {
