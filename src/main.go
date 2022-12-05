@@ -46,7 +46,7 @@ func run() error {
 	// Load environment variables to get database DSN
 	err := loadEnvironmentVariables()
 	if err != nil {
-		fmt.Errorf("Could not load .env file at '../.env'", err)
+		return fmt.Errorf("Could not load .env file at '../.env'. %w", err)
 	}
 
 	db, err := connectToDatabase()
@@ -56,7 +56,7 @@ func run() error {
 
 	err = db.AutoMigrate(&Candle{})
 	if err != nil {
-		return fmt.Errorf("Could not migrate database.", err)
+		return fmt.Errorf("Could not migrate database. %w", err)
 	}
 
 	// Loads .csv files from ../data/ using ticker.csv naming convention
@@ -64,13 +64,13 @@ func run() error {
 	// and that the first row is the header row
 	candles, err := aggregateCandlesFromFiles(db)
 	if err != nil {
-		return fmt.Errorf("Could not load data from csv files.", err)
+		return fmt.Errorf("Could not load data from csv files. %w", err)
 	}
 
 	// Seed the data into the database
 	err = seed(db, candles)
 	if err != nil {
-		return fmt.Errorf("Could not seed data.", err)
+		return fmt.Errorf("Could not seed data. %w", err)
 	}
 
 	return nil
@@ -179,34 +179,34 @@ func createCandles(s string) ([]Candle, error) {
 }
 
 func createCandle(ticker string, s []string) (Candle, error) {
-	date, err := time.Parse(layoutUS, s[0])
+	date, err := time.Parse(layoutISO, s[0])
 	if err != nil {
 		return Candle{}, err
 	}
 
-	close, err := parse(clean(s[1]))
+	open, err := parse(clean(s[1]))
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	volume, err := strconv.ParseInt(s[2], 10, 64)
+	high, err := parse(clean(s[2]))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	low, err := parse(clean(s[3]))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	close, err := parse(clean(s[4]))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	volume, err := strconv.ParseInt(s[6], 10, 64)
 	if err != nil {
 		volume = 0
-	}
-
-	open, err := parse(clean(s[3]))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	high, err := parse(clean(s[4]))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	low, err := parse(clean(s[5]))
-	if err != nil {
-		log.Fatal(err)
 	}
 
 	candle := Candle{

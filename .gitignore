@@ -20,3 +20,4 @@
 
 # Raw data
 data/*
+.env
