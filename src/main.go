@@ -1,20 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"encoding/csv"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
-	"github.com/google/uuid"
+	"github.com/jmoiron/sqlx"
 	"github.com/joho/godotenv"
-	"gorm.io/driver/mysql"
-	"gorm.io/gorm"
+	_ "github.com/libsql/libsql-client-go/libsql"
 )
 
 const (
@@ -25,14 +23,15 @@ const (
 
 // Candle is a single candle of a time series
 type Candle struct {
-	ID     string    `gorm:"primaryKey"`
-	Ticker string    `gorm:"not null; index"`
-	Date   time.Time `gorm:"not null; index"`
-	Open   float64   `gorm:"not null"`
-	Close  float64   `gorm:"not null"`
-	High   float64   `gorm:"not null"`
-	Low    float64   `gorm:"not null"`
-	Volume int64     `gorm:"not null"`
+	ID     int64
+	Ticker string
+
+	Date   time.Time
+	Open   float64
+	Close  float64
+	High   float64
+	Low    float64
+	Volume int64
 }
 
 func main() {
@@ -46,7 +45,7 @@ func run() error {
 	// Load environment variables to get database DSN
 	err := loadEnvironmentVariables()
 	if err != nil {
-		return fmt.Errorf("Could not load .env file at '../.env'. %w", err)
+		return fmt.Errorf("could not load .env file at '../.env'. %w", err)
 	}
 
 	db, err := connectToDatabase()
@@ -54,23 +53,18 @@ func run() error {
 		return err
 	}
 
-	err = db.AutoMigrate(&Candle{})
-	if err != nil {
-		return fmt.Errorf("Could not migrate database. %w", err)
-	}
-
 	// Loads .csv files from ../data/ using ticker.csv naming convention
 	// Assumes that the data is in the format of: Date,Close/Last,Volume,Open,High,Low
 	// and that the first row is the header row
 	candles, err := aggregateCandlesFromFiles(db)
 	if err != nil {
-		return fmt.Errorf("Could not load data from csv files. %w", err)
+		return fmt.Errorf("could not load data from csv files. %w", err)
 	}
 
 	// Seed the data into the database
 	err = seed(db, candles)
 	if err != nil {
-		return fmt.Errorf("Could not seed data. %w", err)
+		return fmt.Errorf("could not seed data. %w", err)
 	}
 
 	return nil
@@ -80,26 +74,26 @@ func loadEnvironmentVariables() error {
 	return godotenv.Load("../.env")
 }
 
-func connectToDatabase() (*gorm.DB, error) {
-	dsn := os.Getenv(DSN)
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+func connectToDatabase() (*sqlx.DB, error) {
+	url := os.Getenv("DSN")
+
+	db, err := sqlx.Open("libsql", url)
 	if err != nil {
 		return nil, err
 	}
 	log.Print("Successfully opened connection to database.")
 
-	sqlDB, err := db.DB()
-	if sqlDB.Ping(); err != nil {
-		return nil, err
+	if db.Ping(); err != nil {
+		return nil, fmt.Errorf("could not ping database. %w", err)
 	}
 	log.Print("Successfully pinged database.")
 
 	return db, err
 }
 
-func aggregateCandlesFromFiles(db *gorm.DB) ([]Candle, error) {
+func aggregateCandlesFromFiles(db *sqlx.DB) ([]Candle, error) {
 	// read each file and create all candles to be seeded
-	files, err := ioutil.ReadDir("../data/")
+	files, err := os.ReadDir("../data/")
 	if err != nil {
 		return nil, err
 	}
@@ -109,13 +103,17 @@ func aggregateCandlesFromFiles(db *gorm.DB) ([]Candle, error) {
 		// If data with ticker exists, abort.
 		ticker := strings.Split(f.Name(), ".")[0]
 		var count int64
-		db.Model(&Candle{}).Where("ticker = ?", ticker).Count(&count)
+		err := db.Get(&count, "SELECT COUNT(1) FROM candles WHERE ticker = ?", ticker)
+		if err != nil {
+			log.Printf("ERR: %s", err.Error())
+		}
+		log.Printf("COUNT: %d", count)
 		if count > 0 {
-			log.Print("Data for ticker '" + ticker + "' already exists. Skipping.")
+			log.Printf("Data for ticker '%s' already exists. Skipping.", ticker)
 			continue
 		}
 
-		log.Print("Inserting data for '" + ticker + "'.")
+		log.Printf("Inserting data for '%s'.", ticker)
 
 		c, err := createCandles(f.Name())
 		if err != nil {
@@ -128,17 +126,13 @@ func aggregateCandlesFromFiles(db *gorm.DB) ([]Candle, error) {
 	return candles, nil
 }
 
-func seed(db *gorm.DB, c []Candle) error {
+func seed(db *sqlx.DB, c []Candle) error {
 	if len(c) == 0 {
 		log.Print("No data to seed.")
 		return nil
 	}
 
-	err := db.Transaction(func(tx *gorm.DB) error {
-		tx.CreateInBatches(c, 100)
-
-		return nil
-	})
+	err := bulkInsert(db, c)
 
 	if err == nil {
 		log.Print("Successfully inserted data.")
@@ -210,7 +204,6 @@ func createCandle(ticker string, s []string) (Candle, error) {
 	}
 
 	candle := Candle{
-		ID:     uuid.NewString(),
 		Ticker: ticker,
 		Date:   date,
 		Open:   open,
@@ -234,4 +227,67 @@ func parse(s string) (float64, error) {
 	}
 
 	return value, nil
+}
+
+func bulkInsert(db *sqlx.DB, candles []Candle) error {
+	BUF_LENGTH := 50
+	PARAM_LENGTH := 7
+	INSERTS_PER_TX := 10
+
+	var values []interface{}
+	for _, c := range candles {
+		values = append(values, c.Date.Format("2006-01-02"), c.Ticker, c.Open, c.High, c.Low, c.Close, c.Volume)
+
+		// Number of values to insert per candle.
+		if len(values) == BUF_LENGTH*PARAM_LENGTH*INSERTS_PER_TX {
+			err := insertNPerTx(db, values, BUF_LENGTH, PARAM_LENGTH, INSERTS_PER_TX)
+			if err != nil {
+				return err
+			}
+			values = values[0:0]
+		}
+	}
+
+	if len(values) > 0 {
+		err := insertNPerTx(db, values, len(values)/PARAM_LENGTH, PARAM_LENGTH, 1)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func insertNPerTx(db *sqlx.DB, values []interface{}, buf_len int, param_len int, n int) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+
+	bufLengthStmt := insertNCandlesStatement(buf_len)
+
+	stmt, err := tx.Prepare(bufLengthStmt)
+	if err != nil {
+		return err
+	}
+
+	for i := 0; i < n; i++ {
+		if _, err := stmt.Exec(values[i*buf_len*param_len : (i+1)*buf_len*param_len]...); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func insertNCandlesStatement(n int) string {
+	buf := bytes.NewBuffer([]byte("INSERT INTO candles (date, ticker, open, high, low, close, volume) VALUES "))
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			buf.WriteString(",")
+		}
+		buf.WriteString("(?,?,?,?,?,?,?)")
+	}
+
+	return buf.String()
 }
